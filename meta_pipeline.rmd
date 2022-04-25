@@ -1,0 +1,1814 @@
+---
+title: "meta"
+author: "kaiHe"
+date: "`r format(Sys.time(), '%Y年%m月%d日')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, out.width="100%", fig.align="center", collapse = TRUE,fig.show="hold", warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+```
+
+# 准备阶段
+
+## 脚本涉及绘制的图形有：  
+1. Alpha多样性、稀释曲线
+2. Top_n的群落组成图
+
+
+
+## 加载包、准备主题
+```{r,eval=TRUE}
+rm(list = ls())
+
+# 加载包
+sapply(c('reshape2','pheatmap','RColorBrewer','ggpubr','dplyr','scales',
+         'ggalluvial','factoextra',"FactoMineR",'ggtree','treeio','conflicted','ggplotify',
+         'patchwork','vegan','ggplot2','doBy','ggrepel','palettetown','psych'), 
+       require, character.only = TRUE)
+
+#设置色彩与主题
+
+  col1 = pokepal(pokemon = 2, spread = 10)
+  col2 = brewer.pal(9,"Set1")
+  col3 = brewer.pal(12,"Set3")
+  col4 = pokepal(pokemon = 4, spread = 10)
+  col5 = pokepal(pokemon = 5, spread = 10)
+  mix_col <- c(col1,col2,col3,col4,col5)
+  rm(col1,col2,col3,col4,col5)
+  show_col(mix_col)
+  
+  ##设置
+  mytheme <- theme(
+    panel.grid=element_blank(),
+    panel.background = element_rect(color = 'black', fill = 'transparent'),
+    axis.line.x=element_line(size=.5, colour="black"),
+    axis.line.y=element_line(size=.5, colour="black"),
+     axis.text.x = element_text(size = 12,hjust = 1,color = 'black'),
+     axis.text.y = element_text(size = 12,hjust = 1,color = 'black'),
+     axis.title = element_text(size = 13),
+    axis.ticks=element_line(color="black"),
+    axis.text=element_text(color="black", size=12),
+    legend.position="right",
+    legend.background=element_blank(),
+    legend.key=element_blank(),
+    legend.text= element_text(size=7),
+    text=element_text(family="sans", size=7))
+  
+
+
+```
+
+## 导入数据  
+导入丰度表并筛选，物种筛选标准为至少每组一半的样品平均丰度大于0.1%
+
+```{r}
+
+  gene <- read.delim('./nr/Genu.txt',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  colnames(gene) <- gsub(":sum","",colnames(gene))
+  gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  gene <- gene[!grepl("^unclass",rownames(gene)),]
+  
+  gene_precent <- as.data.frame(apply(gene, 2, function(x){x/sum(x)}))#百分比化
+  #gene_precent2 <- decostand(gene,"total",2)
+
+  #过滤低丰度物种
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                 (x>=0.0001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                   (x>=0.0001))/length(x)}) > cutoff),])
+  gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+  
+  rm(gene1,gene2)
+  
+  #过滤平均丰度大于0.001的物种
+  #gene_filter2 <- data.frame(gene_precent[which(apply(gene_precent, 1, function(x){mean(x)})>0.0005),], check.names=F) 
+  #过滤unclassified物种
+  #gene_filter <- gene_filter[!grepl("^unclass",rownames(gene_filter)),]
+  
+  gene_filter$mean <- rowMeans(gene_filter)
+  #求各类群的丰度总和，并排序
+  gene_filter <- gene_filter[order(gene_filter$mean,decreasing = TRUE),]
+  #删除最后一列和,并取Top10物种作图
+  gene_filter <- gene_filter[,-ncol(gene_filter)]
+  
+  # 尝试去除B2 B3样品 SampleID      
+  #group <- subset(group,!SampleID%in% c('B2','B3'))
+
+```
+
+
+## 稀释曲线
+```{r}
+gene <- round(gene)
+otu <- t(gene)
+
+## 直接绘图 绘制分组的稀释曲线
+pdf('./New_Result/Figure/Species_Rarecurve.pdf',height = 5,width = 6)
+rarecurve(otu, step = 2000, label = FALSE,col = c(rep('#209058',10),rep('#F09008',8)),xlab = 'Number of Sequences',ylab = 'Richness',title = 'Rarefaction curve')
+dev.off()
+
+## 或者导入ggplot2  绘制单个样品的稀释曲线
+rare_otu <- rarecurve(otu, step = 2000, label = FALSE)
+names(rare_otu) <- rownames(otu)
+
+plot_data <- mapply(FUN = function(x, y) {
+  mydf <- as.data.frame(x)
+  colnames(mydf) <- "value"
+  mydf$sample_name <- y
+  mydf$subsample <- attr(x, "Subsample")
+  mydf
+}, x = rare_otu, y = as.list(rownames(otu)), SIMPLIFY = FALSE)
+
+xy <- do.call(rbind, plot_data)
+rownames(xy) <- NULL  
+
+names(group)[1] <- 'sample_name'
+names(group)[2] <- 'Group'
+xy <- merge(xy,group,by = 'sample_name',all.x = TRUE)
+
+#单个样品作图
+plot <- ggplot(xy, aes(x = subsample, y = value,color = Group)) +
+  scale_color_manual(values = c('#209058','#F09008'))+
+   # turn legend on or off
+  geom_line() +
+  labs(x = 'Number of sequences', y = 'Richness') +
+  theme_bw() +
+  geom_vline(xintercept = min(rowSums(otu)), linetype = 2)
+
+plot  
+#scale_x_continuous(breaks = seq(0, 30000, 5000), labels = as.character(seq(0, 30000, 5000)))
+ggsave('./New_Result/Figure/rn.pdf',plot,height = 7,width = 6)
+
+```
+
+
+
+
+
+## 计算Alpha多样性指数并绘图
+```{r}
+## 计算多样性指数并作图 ,使用全部物种的丰度表
+## 这里拿全部的原始数据去计算 因为Alpha指数多样性不能有小数
+
+  gene_precent1 <- t(round(gene))
+  # alpha指数函数计算 (8种多样性指数)
+  alpha <- function(x, tree = NULL, base = exp(1)) {
+    est <- estimateR(x)
+    Richness <- est[1, ]
+    Chao1 <- est[2, ]
+    ACE <- est[4, ]
+    Shannon <- diversity(x, index = 'shannon', base = base)
+    Simpson <- diversity(x, index = 'simpson')#Gini-Simpson 指数
+    Inverse.Simpson <- diversity(x, index = "inv") # Inverse Simpson指数
+    Pielou <- Shannon / log(Richness, base)
+    goods_coverage <- 1 - rowSums(x == 1) / rowSums(x)
+    result <- data.frame(Richness, Shannon, Simpson, Inverse.Simpson,Pielou, Chao1, ACE, goods_coverage)
+    if (!is.null(tree)) {
+      PD_whole_tree <- pd(x, tree, include.root = FALSE)[1]
+      names(PD_whole_tree) <- 'PD_whole_tree'
+      result <- cbind(result, PD_whole_tree)
+    }
+    result
+  }
+  
+  alpha_all <- alpha(gene_precent1, base = 2)
+  #write.csv(alpha_all,'./Reuslt/alpha/Species_genu.csv',quote = F)
+  ## 分面展示图形
+  ## 转换为长数据
+  
+  alpha_all$sample <- rownames(alpha_all)
+  alpha_melt <- melt(alpha_all,id.vars = 'sample')
+  names(alpha_melt)[1] <- 'SampleID'
+  alpha_melt <- merge(alpha_melt,group,by = 'SampleID')
+  
+  ## 或者直接分面展示
+  compaired <- list(c("D", "H"))
+  p1 <- ggplot(alpha_melt,aes(x=group,y=value,fill=group))+
+    stat_boxplot(geom = "errorbar")+geom_boxplot(outlier.colour = NA)+
+    # stat_summary(fun.y = mean, geom = "point", size = 2,color = 'red')+
+    geom_point(aes(color = group),position = position_jitterdodge(0.1))+
+    # 添加p值 wilcox 检验
+    geom_signif(comparisons = compaired,
+                map_signif_level = F, # 显示数值还是符号
+                step_increase = 0.3, # 设置标注之间的距离
+                test = wilcox.test)+
+    scale_fill_manual(values = c('#209058','#F09008'))+
+    scale_color_manual(values = c('#209058','#F09008'))+
+    xlab(" ")+ylab(" ")+mytheme+
+    theme(
+      axis.text.x = element_text(angle = 0,size = 12,face = 'bold',color = 'black'),
+      axis.text.y = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+      strip.text  = element_text(face = 'bold',size = 8),
+      strip.background = element_rect(fill = 'grey',colour = 'black',size = 1))+
+    #facet_grid(factor(variable)~.,scale = 'free_y')
+    facet_wrap(~factor(variable),nrow = 2,scales = 'free')
+  p1
+  ggsave('./New_Result/Figure/Alpha多样性及稀释曲线/Species_alpha.pdf',p1,height = 7,width = 10)
+  
+  ## 写成函数单独绘制某个指数的箱线图
+
+  
+  #p_value <- wilcox.test(value~group,sub_data,exact = FALSE)
+  
+  for (i in unique(alpha_melt$variable)){
+    sub_data <- dplyr::filter(alpha_melt,alpha_melt$variable %in% c(i))
+    p_value <- 
+     p2 <- ggplot(sub_data,aes(group,y=value,fill=group))+
+    stat_boxplot(geom = "errorbar")+geom_boxplot(outlier.colour = NA)+
+    mytheme+
+    labs(x = '',y = i)+
+    scale_fill_manual(values = c('#209058','#F09008'))+
+    scale_color_manual(values = c('#209058','#F09008'))+
+    geom_point(aes(color = group),position = position_jitterdodge())+mytheme+
+            geom_signif(comparisons = compaired,
+                map_signif_level = F, # 显示数值还是符号
+                step_increase = 0.3, # 设置标注之间的距离
+                test = wilcox.test) # 默认exact = TRUE
+ 
+ ggsave(paste('./New_Result/Figure/Alpha多样性及稀释曲线/',i,'.pdf'),p2,height = 7,width = 6) 
+    
+  }
+  
+
+  
+```
+
+
+
+
+## 物种群落组成图
+```{r}
+### 该函数绘制三种图形：普通柱状图(单个样品)、冲击图(单个样品和分组)
+### 也可再稍作变化为 偏差图、金字塔图、蝴蝶图
+
+bar_plot <- function(data,bar_top,lab){
+
+  #删除最后一列和,并取Top10物种作图
+  gene_top <- gene_filter[1:10,]
+  # 剩余的物种合并为Others
+  gene_top['Others',] <- 1-colSums(gene_top)
+  n1 <- nrow(gene_top) 
+  ## 设置颜色
+  colour <- mix_col[1:n1]#设置对应属的个数
+  colour[length(colour)] <- '#5f9ea0' #最后一个设置为灰色
+  gene_top1 <- gene_top
+  gene_top1$Taxonomy <- factor(rownames(gene_top1), levels = rev(rownames(gene_top1)))
+  gene_top1 <- melt(gene_top1, id = 'Taxonomy')
+  names(group)[1] <- 'variable'
+  gene_top1 <- merge(gene_top1, group, by = 'variable')
+  
+  ##  普通柱状图
+  p1 <- ggplot(gene_top1, aes(variable, 100 * value, fill = Taxonomy)) +
+    geom_col(position = 'stack', width = 1)  +
+    scale_fill_manual(values =  rev(c(colour))) +
+    theme_classic()+scale_y_continuous(expand = c(0,0))+
+    labs(x = '', y = 'Relative Abundance(%)')+
+    theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), strip.text = element_text(size = 12)) +
+    theme(axis.text = element_text(size = 12,face = 'bold'), axis.title = element_text(size = 13,face = 'bold'), legend.text = element_text(size = 11))+
+    facet_wrap(~group, scales = 'free_x', ncol = 2) #分面
+  p1
+      ggsave(paste0('./New_Result/Figure/群落组成图/',lab ,'_bar1.pdf'),p1,height = 7,width = 10)
+
+  ## 冲击图 
+  p2 <- ggplot(data = gene_top1,aes(x = variable, y = value*100, alluvium = Taxonomy, stratum = Taxonomy))+
+    geom_alluvium(aes(fill = Taxonomy),alpha = .5,width = 0.6)+ 
+    geom_stratum(aes(fill = Taxonomy),width = 0.6)+scale_fill_manual(values = rev(c(colour)))+
+    theme_classic()+scale_y_continuous(expand = c(0,0))+
+    labs(x = '', y = 'Relative Abundance(%)')+
+    theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), strip.text = element_text(size = 12)) +
+    theme(axis.text = element_text(size = 12), axis.title = element_text(size = 13), legend.text = element_text(size = 11))
+  
+  p2 
+    ggsave(paste0('./New_Result/Figure/群落组成图/', lab ,'_bar2.pdf'),p2,height = 7,width = 10)
+
+  ## 分组作图
+  gene_top2 <- gene_top
+  gene_top2$D <- rowMeans(gene_top2[,c(1:10)])
+  gene_top2$H <- rowMeans(gene_top2[,c(11:18)])
+  gene_top2 <- select(gene_top2,D,H)
+  gene_top2$Taxonomy <- factor(rownames(gene_top2), levels = rev(rownames(gene_top2)))
+  gene_top2 <- melt(gene_top2, id = 'Taxonomy')
+  names(group)[1] <- 'variable'
+  ## 分组群落组成图
+  p3 <- ggplot(data = gene_top2,aes(x = variable, y = value*100, alluvium = Taxonomy, stratum = Taxonomy))+
+    geom_alluvium(aes(fill = Taxonomy),alpha = .5,width = 0.6)+ 
+    geom_stratum(aes(fill = Taxonomy),width = 0.6)+scale_fill_manual(values = rev(c(colour)))+
+    theme_classic()+scale_y_continuous(expand = c(0,0))+
+    labs(x = '', y = 'Relative Abundance(%)')+
+    theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), strip.text = element_text(size = 12)) +
+    theme(axis.text = element_text(size = 12), axis.title = element_text(size = 13), legend.text = element_text(size = 11))
+  p3
+  ggsave(paste0('./New_Result/Figure/群落组成图/', lab ,'_bar3.pdf'),p3,height = 7,width = 10)
+   
+  ## 组成图偏差图
+  ## 增添一列
+  gene_top2$sign <- ifelse(gene_top2$variable == 'D',gene_top2$value,-gene_top2$value)
+  tmp = with(gene_top2, labeling::extended(range(sign)[1], range(sign)[2], m = 5))
+
+  p4 <- ggplot(gene_top2,aes(x=variable,y=sign))+
+    geom_bar(stat = "identity",aes(fill=Taxonomy))+
+    scale_fill_manual(values=rev(c(colour)))+
+    theme_bw()+
+    theme(
+      legend.position = c("bottom"),
+      legend.margin = margin(1,0,1,0)
+    )+
+    xlab("")+
+    coord_flip()
+  #scale_y_continuous(breaks = tmp,labels = abs(tmp))
+  p4 
+  ggsave(paste0('./New_Result/Figure/群落组成图/', lab ,'_bar4.pdf'),p4,height = 7,width = 10)
+
+  ## 面积图
+  # 
+  # id=rep(1:ncol(gene_filter), each=n1)
+  # data_frame = data.frame(gene_top, id)
+  # p3 <- ggplot(data_frame, aes(id, 100 * value, fill = Taxonomy)) +
+  #   #geom_col(position = 'stack', width = 1)  +
+  #   geom_area()+
+  #   scale_fill_manual(values =  rev(c(colour))) +
+  #   theme_bw()+scale_y_continuous(expand = c(0,0))+
+  #   scale_x_continuous(breaks=1:ncol(gene_filter), labels=levels(data_frame$variable), expand=c(0, 0))+
+  #   labs(x = '', y = 'Relative Abundance(%)')+
+  #   theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), strip.text = element_text(size = 12)) +
+  #   theme(axis.text = element_text(size = 12,face = 'bold'), axis.title = element_text(size = 13,face = 'bold'), legend.text = element_text(size = 11))
+  # # facet_wrap(~group, scales = 'free_x', ncol = 2) 分面
+  # p3
+
+
+}
+bar_plot(gene_filter,10,'Family')
+```
+
+## 物种差异分析
+
+```{r}
+#基于Wilcox rank-sum检验得出各个层级的差异物种
+data <- head(gene_filter,20)
+
+Nr_wiclox_test <- function(data,lab){ 
+  names(group)[1] <- 'sample'
+  result <- NULL
+  library(doBy)
+  se <- function(x) sd(x) / (length(x))^0.5
+  
+  
+  for (n in 1:nrow(data)) {
+    # 这里必须使用as.data.frame，否则种丰度表的名字会用.代替
+    gene_n <- as.data.frame(t(data[n,subset(group, group %in% c("D","H"))$sample]))
+    gene_id <- names(gene_n)[1]
+    names(gene_n)[1] <- 'gene'
+    gene_n$sample <- rownames(gene_n)
+    gene_n <- merge(gene_n, group, by = 'sample', all.x = TRUE)
+    gene_n$group <- factor(gene_n$group)
+    p_value <- wilcox.test(gene~group, gene_n,exact = FALSE)$p.value
+    if (!is.na(p_value)){
+      stat <- summaryBy(gene~group, gene_n, FUN = c(mean, sd, se))
+      result <- rbind(result, c(gene_id, as.character(stat[1,1]), stat[1,2], stat[1,3],stat[1,4], as.character(stat[2,1]), stat[2,2], stat[2,3],stat[2,4], p_value))
+    }
+  }
+  
+  result <- data.frame(result)
+  names(result) <- c('Taxonomy', 'groupD', 'mean1', 'sd1', 'se1','groupH', 'mean2', 'sd2','se2','p_value')
+  
+  a <- data.frame(apply(result[,c(3:5,7:10)],2 ,as.numeric))
+  result <- data.frame(result[1:2],a[1:3],result[6],a[4:7]) 
+  
+  result <- result[order(result$p_value),]  # 从小到大排序
+  # P.adjust  p 值校正的过程 
+  #先将p值那列提出转换为矩阵形式 
+  
+  result$p_adjust <- p.adjust(result$p_value,method = 'BH') # 这里使用BH 方法 和fdr结果相似
+  #result$padj <- p.adjust(result$p_value, method = "none")
+  
+  result$enrich_group <- ifelse(result$mean1 > result$mean2,"D","H")
+  
+  result$sign <- ifelse(result$p_adjust>=0.01 & result$p_adjust<0.05,'*',
+                        ifelse(result$p_adjust>=0.001 & result$p_adjust<0.01,'**', 
+                               ifelse(result$p_adjust<0.001,'***','ns')))
+
+  result <- cbind(data,result[match(rownames(data),result$Taxonomy),])
+  
+  diff_tax <- subset(result,result$p_adjust < 0.05)
+  
+  write.csv(diff_tax, paste0('./New_Result/Table/diff_',lab,'.csv'), row.names = TRUE,quote = FALSE)
+  write.csv(result, paste0('./New_Result/Table/Result_',lab,'.csv'), row.names = TRUE,quote = FALSE)
+  # #另一种计算差异方法  ，俩种差异算法结果一样，wilcox加上FALSE时候值会多一点
+  # # gene_filter2 <- data.frame(t(gene_filter1))
+  # # gene_filter3 <- data.frame(gene_filter2,group$group)
+  # # colnames(gene_filter3) <- c(colnames(gene_filter2),'Group')
+  # # 
+  # # library(tidyverse)
+  #  diff3 <- gene_filter3 %>% 
+  #    select_if(is.numeric) %>% 
+  #    map_df(~broom::tidy(wilcox.test(.~Group,data = gene_filter3,exact = FALSE)),.id = 'var')
+  # # str(diff2) 
+}  
+
+Nr_wiclox_test(gene_filter,lab = 'aa')
+
+```
+
+### 差异物种展示  
+
+#### 1. 箱线图
+
+```{r}
+diff_data <- read.csv('./New_Result/Table/diff_Species.csv',header = T,row.names = 1)
+
+diff_box <- diff_data[,c(1:18)]  
+diff_box$Taxonomy <- factor(rownames(diff_box), levels = rev(rownames(diff_box)))
+  
+diff_box1 <- melt(diff_box, id = 'Taxonomy')
+names(group)[1] <- 'variable'
+diff_box1 <- merge(diff_box1, group, by = 'variable')
+
+diff_box1$value <- diff_box1$value*100
+
+plot <- ggplot(diff_box1,aes(factor( Taxonomy,levels = rownames(diff_box)),log10(value),fill=group))+
+  stat_boxplot(geom = "errorbar")+geom_boxplot(outlier.colour = NA)+
+  mytheme+theme(
+  legend.title = element_text(face = 'bold',size = 11),
+  axis.text.x = element_text(angle = 45,size = 8,hjust = 1,color = 'black',face = 'bold'),
+  axis.text.y = element_text(size = 12,hjust = 1,color = 'black'),
+  axis.title = element_text(size =9))+
+  labs(x = '', y = 'Log10(Relative Abundance)')+
+  scale_fill_manual(values = c('#209058','#F09008'))+
+  scale_color_manual(values = c('#209038','#F09008'))+
+  geom_point(aes(color = group),position = position_jitterdodge(0.1),size = .5)+
+  ## add mean
+  stat_summary(aes(group = group),fun.y = "mean",geom='point',shape = 3,size = .5,color ='red',position = position_jitterdodge(0.1))
+
+plot
+ ggsave('./New_Result/Figure/差异物种/diffbox1_Species.pdf',plot,height = 4,width = 12)  
+ 
+
+ 
+## 循环生成所有的物种的箱线图
+## 这里要注意种名中会有:存在，保存时候则无效，所以要提前更换
+rownames(diff_box) <- gsub(':','_',rownames(diff_box))
+diff_box1$Taxonomy <- gsub(':','_',diff_box1$Taxonomy)
+dir.create('./New_Result/Figure/Genuplot',recursive = TRUE)
+compaired <- list(c('H','D'))
+
+for (i in rownames(diff_box)){
+  sub_data <- dplyr::filter(diff_box1,diff_box1$Taxonomy %in% c(i))
+  #p_value <- round(wilcox.test(value~group,sub_data,exact = FALSE)$p.value,4)
+  
+  sub_plot <- ggplot(sub_data,aes(group,log10(value),fill=group))+
+  stat_boxplot(geom ="errorbar")+geom_boxplot(outlier.colour = NA)+
+  mytheme+theme(
+  legend.title = element_text(face = 'bold',size = 11),
+  axis.text.x = element_text(size = 12,hjust = 1,color = 'black',face = 'bold'),
+  axis.text.y = element_text(size = 12,hjust = 1,color = 'black'),
+  axis.title = element_text(size =9))+
+  labs(x = '', y = 'Log10(Relative Abundance)')+
+   scale_fill_manual(values = c('#209058','#F09008'))+
+  scale_color_manual(values = c('#209038','#F09008'))+
+  geom_point(aes(color = group),position = position_jitterdodge(0.1),size = .5)+
+      geom_signif(comparisons = compaired,
+                map_signif_level = F, # 显示数值还是符号
+                step_increase = 0.3, # 设置标注之间的距离
+                test = wilcox.test) # 默认exact = TRUE
+
+  ggsave(paste('./New_Result/Figure/Genuplot/',i,'.pdf'),sub_plot,height = 4,width = 4)
+}
+
+
+```
+
+#### 2. 柱状图
+
+```{r}
+diff_box <- diff_data[,c(1:18)] 
+barPLOT <- function(data,lab){
+  data$Tax <- rownames(data)
+  gene_filter2 <- melt(data, id = 'Tax')
+  names(group)[1] <- 'variable'
+  gene_filter2 <- merge(gene_filter2, group, by = 'variable')
+  se <- function(x) sd(x) / (length(x))^0.5
+  pathway_stat <- summaryBy(value~group+Tax, gene_filter2, FUN = c(mean, sd, se))
+  
+  pathway_stat$value.mean <- 100 * pathway_stat$value.mean
+  pathway_stat$value.sd <- 100 * pathway_stat$value.sd
+  pathway_stat$value.se <- 100 * pathway_stat$value.se
+   
+  Tax_level <- unique(gene_filter2$Tax)
+  
+  
+  for (i in Tax_level) {
+    Tax_i <- subset(gene_filter2, Tax == i)
+    test <- wilcox.test(value~group, Tax_i,exact = FALSE)
+    line_t <- which(pathway_stat$Tax == i & pathway_stat$group == 'H')
+    pathway_stat[line_t,'p_value'] <- p.adjust(test$p.value)
+   
+    if (test$p.value < 0.05 & test$p.value >= 0.01) {
+      pathway_stat[line_t,'sign'] <- '*'
+    }
+    if (test$p.value < 0.01 & test$p.value >= 0.001) {
+      pathway_stat[line_t,'sign'] <- '**'
+    }
+    if (test$p.value < 0.001) {
+      pathway_stat[line_t,'sign'] <- '***'
+      
+    }
+    if (test$p.value > 0.05) {
+      pathway_stat[line_t,'sign'] <- " "  
+    }
+  }  
+  
+  
+  p2 <- ggplot(pathway_stat,aes(factor(Tax,levels = rev(rownames(data))),value.mean,fill = group))+
+    geom_col(position = 'dodge', width = 0.8, colour = 'black', size = 0.05) + 
+    #添加显著性标记“*”
+    #geom_text(aes(label = sign, y = value.mean + value.se + 1), size = 6, position = position_dodge(0.8),vjust = 1) +
+    #geom_errorbar(aes(ymin = value.mean - value.se, ymax = value.mean + value.se), size = 0.3, width = .35, position = position_dodge(width = .8))+  #添加误差线（均值±标准差）
+    scale_fill_manual(values =  c('#209058','#F09008'))+   #填充颜色
+    mytheme+ #去除图例标题，调整图例位置
+    coord_flip()+   #横、纵坐标轴反转
+    scale_y_continuous(expand = c(0,0),limits = c(0,max(pathway_stat$value.mean+1)))+
+    #scale_y_continuous(expand = c(0,0),limits = c(0,max(pathway_stat$value.mean)+5))+
+    labs(x = 'Taxonomy', y = 'Relative Abundance (%)')+  #坐标轴标题
+    theme(
+      axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+      axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+    )
+  #write.csv(pathway_stat, paste0('./table/diff_',lab,'.csv'), quote = TRUE,row.names = FALSE)
+  ggsave(paste0('./New_Result/Figure/差异物种/diffbar_',lab,'.pdf'),p2,height = 7,width = 6)
+}
+barPLOT(diff_box,lab = 'Genu')  
+```
+
+
+
+### 热图加柱形图
+TOP20的种绘制热图，在右侧添加柱形图
+
+```{r}
+
+# 热图加柱状图组合图
+##  Top20丰度种水平热图+柱状图组合，先读入nr注释文件
+data_abun20 <- head(gene_filter,20)
+# 柱状图
+barPLOT(data_abun20,'top20Species')
+
+nr <- read.delim('./nr/nr_ano.tsv', sep = '\t', header = FALSE,stringsAsFactors = FALSE, check.names = FALSE) 
+  names(nr) <- c('Kingdom','Phylum','Class','Order','Family','Genu','Species')
+  
+  # top 20种 
+  ano_row <- subset(nr,nr$Species%in%rownames(data_abun20)) %>% 
+    dplyr::select(.,Phylum,Species)
+  rownames(ano_row) <- NULL
+  ano_row <- ano_row%>% tibble::column_to_rownames('Species')
+    group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  ano_col <- group %>% tibble::column_to_rownames('SampleID')
+  
+  #归一化 Min-Max
+  rescale <- function(x) {
+    rng <- range(x, na.rm = TRUE)
+    (x - rng[1]) / (rng[2] - rng[1])
+  }
+  
+  Species <- data_abun20 %>%  mutate(across(where(is.numeric), rescale)) 
+  
+  rownames(Species) <- rownames(data_abun20)
+  
+  # 颜色
+  col = colorRampPalette(c("white","yellow","orange","red"))(300)
+  ann_colors=list(group=c(H='#F09008', D='#209058'),Phylum=c(Bacteroidetes="#80e058",Firmicutes="#8dd3C7",Proteobacteria="#FFFF33"))
+  
+  # 作图
+  pheatmap(Species,annotation_col = ano_col,annotation_row =ano_row,gaps_col = 10,
+           cluster_cols =FALSE,cluster_rows  =FALSE,border=TRUE, cutree_cols  = 2,
+           display_numbers = F,fontsize_number = 5,number_format="%.2f",
+           col=col,annotation_colors=ann_colors,cellheight=15,cellwidth=15,filename = './New_Result/Figure/热图/Top20Species.pdf') 
+```
+
+
+### 网络图
+基于种水平构建网络图，输出边、节点文件,输入文件为49个差异种的丰度文件
+```{r}
+diff_data <- read.csv('./New_Result/Table/diff_Species.csv',header = T,row.names = 1)
+
+diff_SP <- diff_data[,c(1:18)] 
+
+## 输出相关性表
+
+Cor_Species <- function(data,R = 0.8,P = 0.05,lab){
+
+
+res <- corr.test(t(data),method = "spearman",adjust = "BH",alpha = 0.05)
+
+# 提取相关性矩阵的r、p值
+r_matrix=res$r
+p_matrix=res$p
+ 
+## 提取上三角矩阵
+r_matrix[lower.tri(r_matrix)] <- NA
+p_matrix[lower.tri(p_matrix)] <- NA
+ 
+ ### 输出相关性表格
+# 转换数据为长格式形式，方便下游分析
+p_value=melt(p_matrix)
+r_value=melt(r_matrix)
+
+#将r、p两表合并
+r_value=cbind(r_value, p_value$value)
+
+# 删除含r_value=NA的行
+r_value=na.omit(r_value)
+# 删除abs(r_value) > 0.7
+r_value = subset(r_value,abs(r_value$value) > R & r_value$value != 1)
+
+# add *
+names(r_value) <- c('Source','Target','correlation','pvalue')
+#r_value$fdr <- r_value$pvalue %>% p.adjust(.,method = 'BH')
+r_value <- arrange(r_value,Source,correlation)
+
+r_value <- transform(r_value,sign = ifelse(pvalue>=0.01 &pvalue<0.05,'*',
+                                                 ifelse(pvalue>=0.001 & pvalue<0.01,'**', 
+                                                        ifelse(pvalue<0.001,'***',''))))
+
+
+write.csv(r_value,paste('./New_Result/Figure/Network/Cor_',lab,'.csv'),quote = F,row.names = FALSE)
+}
+
+Cor_Species(diff_SP,lab = 'Species1')
+
+## 输出边列表 和节点列表 导入Gephi
+Network_cor <- function(data,r_value,p_value){
+  library(Hmisc)
+  genus_corr <- rcorr(t(diff_SP), type = 'spearman')
+  r <- genus_corr$r  #相关系数 r 值
+  p <- genus_corr$P  #相关系数的显著性 p 值
+  p <- p.adjust(p, method = 'BH')  #可选 p 值校正，这里使用 BH 法校正 p 值
+  #仅保留 r>=0.7 且 p.adj<0.01 的相关系数，且去除对角线的自相关
+  r[abs(r)< 0.8 | p>= 0.05] <- 0
+  diag(r) <- 0
+  #write.csv(r,'diff_SpeciesCor.csv',quote = FALSE)
+  
+  # 差异物种各水平的taxon信息
+  nr <- read.delim('./nr/nr_ano.tsv', sep = '\t', header = FALSE,stringsAsFactors = FALSE, check.names = FALSE) 
+  names(nr) <- c('Kingdom','Phylum','Class','Order','Family','Genu','Species')
+  
+  #构建含权的无向网络，权重代表了微生物属间丰度的 spearman 相关系数 
+  library(igraph)
+  g <- graph.adjacency(r, weighted = TRUE, mode = 'undirected')
+  
+  #自相关也可以通过该式去除
+  g <- igraph::simplify(g)
+  
+  #孤立节点的删除（删除度为 0 的节点）
+  g <- delete.vertices(g, names(degree(g)[degree(g) == 0]))
+  
+  # 匹配
+  tax <- subset(nr,nr$Species %in% V(g)$name)
+  tax$taxonomy <- tax$Species
+  rownames(tax) <- NULL
+  tax <- dplyr::select(tax,taxonomy,everything()) %>%    tibble::column_to_rownames('taxonomy')
+  tax <- tax[as.character(V(g)$name),]
+  
+  
+  #该模式下，边权重代表了相关系数
+  #由于权重通常为正值，因此最好取个绝对值，相关系数重新复制一列
+  E(g)$correlation <- E(g)$weight
+  E(g)$weight <- abs(E(g)$weight)
+  #b <- cut(E(g)$weight,breaks = c(0,0.6,0.7,0.8,0.9,1),labels = c('none','0.6≤|cc|<0.7',
+                                                          #'0.7≤|cc|<0.8','0.8≤|cc|<0.9','0.9≤|cc|<1'))
+  #E(g)$scale <- as.character(b)
+  
+
+  # 或者直接
+  E(g)$cor <- ifelse(E(g)$correlation > 0 ,'1','-1')
+  
+  #查看边和节点的数量
+  vcount(g)
+  ecount(g)
+  
+  #添加节点属性信息
+  
+  colnames(tax) <- tolower(colnames(tax))
+  V(g)$kingdom <- tax$kingdom
+  V(g)$phylum <- tax$phylum
+  V(g)$class <- tax$class
+  V(g)$order <- tax$order
+  V(g)$family <- tax$family
+  V(g)$genus <- tax$genu
+  V(g)$Species <- tax$species
+  
+  # 添加组信息
+
+  group <- diff_data[as.character(V(g)$name),'enrich_group']
+  V(g)$Group <- group
+  
+  #查看网络图
+  #g
+  plot(g)
+  
+  #还可以由 igraph 的邻接列表转换
+  adj_matrix <- as.matrix(get.adjacency(g, attr = 'correlation'))
+  write.csv(data.frame(adj_matrix, check.names = FALSE), './New_Result/Table/0.8Species_network.csv', col.names = NA, sep = '\t', quote = FALSE)
+  
+  #边列表
+  edge <- data.frame(as_edgelist(g))    #igraph 的邻接列表转为边列表
+  
+  edge_list <- data.frame(
+    source = edge[[1]],
+    target = edge[[2]],
+    weight = E(g)$weight,
+    correlation = E(g)$correlation,
+    cor = E(g)$cor
+  )
+  head(edge_list)
+  
+  #write.table(edge_list, './table/Species_network.edge_list.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  write.csv(edge_list,'./New_Result/Table/0.8Species_network.edge_list.csv',quote = FALSE,row.names = FALSE)
+  
+  #节点属性列表
+  node_list <- data.frame(
+    ID = names(V(g)),
+    kingdom = V(g)$kingdom,
+    phylum = V(g)$phylum,
+    class = V(g)$class,
+    order = V(g)$order,
+    family = V(g)$family,
+    genus = V(g)$genus,
+    Species = V(g)$Species,
+    Group = V(g)$Group
+    
+  )
+  node_list
+  #write.table(node_list, './table/Species11_network.node_list.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  write.csv(node_list,'./New_Result/Table/0.Species_network.node_list.csv',quote = FALSE,row.names = FALSE)#直接导入Gephi
+ #43节点 112条边
+  
+} 
+
+
+## 计算zi-pi
+if(T){
+  # 先转换为0-1矩阵
+  adj_matrix[abs(adj_matrix)>0] <- 1
+  
+  #邻接矩阵 -> igraph 的邻接列表，获得非含权的无向网络
+  igraph <- graph_from_adjacency_matrix(as.matrix(adj_matrix), mode = 'undirected', weighted = NULL, diag = FALSE)
+  igraph    #igraph 的邻接列表
+  
+  #计算节点度
+  V(igraph)$degree <- degree(igraph)
+  #模块划分，详情 ?cluster_fast_greedy，有多种模型
+  set.seed(123)
+  V(igraph)$modularity <- membership(cluster_fast_greedy(igraph))
+  
+  #输出各节点（微生物 OTU）名称、节点度、及其所划分的模块的列表
+  nodes_list <- data.frame(
+    nodes_id = V(igraph)$name, 
+    degree = V(igraph)$degree, 
+    modularity = V(igraph)$modularity
+  )
+  head(nodes_list)    #节点列表，包含节点名称、节点度、及其所划分的模块
+  
+  write.table(nodes_list, './New_Result/Table/nodes_list.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  
+  ##计算模块内连通度（Zi）和模块间连通度（Pi）
+  source('./code/zi_pi.r')
+  
+  #上述的邻接矩阵类型的网络文件
+  adjacency_unweight <- read.delim('adjacency_unweight.txt', row.names = 1, sep = '\t', check.names = FALSE)
+  adjacency_unweight <- adj_matrix 
+  #节点属性列表，包含节点所划分的模块
+  nodes_list <- read.delim('./New_Result/Table/nodes_list.txt', row.names = 1, sep = '\t', check.names = FALSE)
+  
+  #两个文件的节点顺序要一致
+  nodes_list <- nodes_list[rownames(adjacency_unweight), ]
+  
+  #计算模块内连通度（Zi）和模块间连通度（Pi）
+  #指定邻接矩阵、节点列表、节点列表中节点度和模块度的列名称
+  zi_pi <- zi.pi(nodes_list, adjacency_unweight, degree = 'degree', modularity_class = 'modularity')
+  head(zi_pi)
+  
+  write.table(zi_pi, './New_Result/Table/zi_pi_result.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  
+  ##可再根据阈值对节点划分为 4 种类型，并作图展示其分布
+  library(ggplot2)
+  
+  zi_pi <- na.omit(zi_pi)   #NA 值最好去掉，不要当 0 处理
+  zi_pi[which(zi_pi$within_module_connectivities < 2.5 & zi_pi$among_module_connectivities < 0.62),'type'] <- 'Peripherals'
+  zi_pi[which(zi_pi$within_module_connectivities < 2.5 & zi_pi$among_module_connectivities > 0.62),'type'] <- 'Connectors'
+  zi_pi[which(zi_pi$within_module_connectivities > 2.5 & zi_pi$among_module_connectivities < 0.62),'type'] <- 'Module hubs'
+  zi_pi[which(zi_pi$within_module_connectivities > 2.5 & zi_pi$among_module_connectivities > 0.62),'type'] <- 'Network hubs'
+  
+  # 作图
+  p <- ggplot(zi_pi, aes(among_module_connectivities, within_module_connectivities)) +
+    geom_point(aes(color = type,shape = type), alpha = 0.5, size = 2) +
+    scale_color_manual(values = c('gray','red','blue','purple'), 
+                       limits = c('Peripherals', 'Connectors', 'Module hubs', 'Network hubs'))+
+    geom_text_repel( data = subset(zi_pi,type == 'Connectors'), aes(label = nodes_id),size = 3)+
+    theme(panel.grid = element_blank(), axis.line = element_line(colour = 'black'), 
+          panel.background = element_blank(), legend.key = element_blank()) +
+    labs(x = 'Among-module connectivities (Pi)', y = 'Within-module connectivities (Zi)', color = '') +
+    geom_vline(xintercept = 0.62) +
+    geom_hline(yintercept = 2.5)
+  p
+  ggsave('./New_Result/Figure/Zi_Pi_Species.tiff',p,height = 7,width = 12)
+  
+}
+
+```
+
+
+## Beta多样性展示
+通过三种常用的方法作图，比较择其优。
+### PCOA图
+
+```{r}
+  library(vegan)
+  library(ape)
+  #载入分组文件
+  otu <- data.frame(t(gene_precent))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  otu[is.na(otu)] <- 0
+  pcoa
+  #物种数据 Hellinger 预转化（处理包含很多 0 值的群落物种数据时，推荐使用）
+  #otu <- decostand(otu, method = 'hellinger')
+  
+  #计算Bray-Curtis距离
+  otu <- vegdist(otu, method = "bray")
+  otu <- as.matrix(otu)
+  #进行PCoA分析
+  pcoa<- pcoa(otu, correction = "none", rn = NULL)
+  #用于填充样本点的颜色
+  cbbPalette <- c('#209058','#F09008')
+  #样本点的边框颜色
+  Palette <- c("#000000", "#000000")
+  pich=c(21:24)
+  ##添加adnois
+  Groups <- as.list(group)
+  otu.adonis=adonis(otu~group,data = group,distance = "bray",permutations = 999)
+
+
+  #制作绘图文件
+  PC1 = pcoa$vectors[,1]
+  PC2 = pcoa$vectors[,2]
+  plotdata <- data.frame(rownames(pcoa$vectors),PC1,PC2,Groups$group)
+  colnames(plotdata) <-c("sample","PC1","PC2","group")
+  
+  
+  #用于绘制横纵坐标label的文本，以显示解释比例
+  pc1 <-round(pcoa$values$Relative_eig[1]*100,2)
+  pc2 <-round(pcoa$values$Relative_eig[2]*100,2)
+  plotdata$group <- factor(plotdata$group)
+
+  # 画两侧箱线图
+  p1 <- ggplot(plotdata,aes(group,PC1)) +
+    geom_boxplot(aes(fill = group)) +
+    coord_flip() +
+    scale_fill_manual(values=cbbPalette) +
+    theme_bw()+
+    theme(axis.ticks.length = unit(0.4,"lines"), 
+          axis.ticks = element_line(color='black'),
+          axis.line = element_line(colour = "black"), 
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_text(colour='black',size=12),
+          axis.text.x=element_blank(),
+          legend.position = "none")
+  p1
+  
+  p3 <- ggplot(plotdata,aes(group,PC2)) +
+    geom_boxplot(aes(fill = group),outlier.colour = NA) +
+    scale_fill_manual(values=cbbPalette) +
+    theme_bw()+
+    theme(axis.ticks.length = unit(0.4,"lines"), 
+          axis.ticks = element_line(color='black'),
+          axis.line = element_line(colour = "black"), 
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.x=element_text(colour='black',size=12,
+                                   vjust = 1,hjust = 1),
+          axis.text.y=element_blank(),
+          legend.position = "none")+xlab('PC2')
+  p3
+  
+  p2<-ggplot(plotdata, aes(PC1, PC2)) +
+    geom_point(aes(fill=group),size=8,pch = 21)+
+    scale_fill_manual(values=cbbPalette,name = "Group")+
+    xlab(paste("PCO1 ( ",pc1,"%"," )",sep="")) + 
+    ylab(paste("PCO2 ( ",pc2,"%"," )",sep=""))+
+    xlim(ggplot_build(p1)$layout$panel_scales_y[[1]]$range$range) +
+    ylim(ggplot_build(p3)$layout$panel_scales_y[[1]]$range$range) +
+    theme(text=element_text(size=30))+
+    geom_vline(aes(xintercept = 0),linetype="dotted")+
+    geom_hline(aes(yintercept = 0),linetype="dotted")+
+    theme(panel.background = element_rect(fill='white', colour='black'),
+          panel.grid=element_blank(), 
+          axis.title = element_text(color='black',size=18),
+          axis.ticks.length = unit(0.4,"lines"), axis.ticks = element_line(color='black'),
+          axis.line = element_line(colour = "black"), 
+          axis.title.x=element_text(colour='black', size=18),
+          axis.title.y=element_text(colour='black', size=18),
+          axis.text=element_text(colour='black',size=12),
+          legend.title=element_text(size = 24,face = "bold"),
+          legend.text=element_text(size=20),
+          legend.key=element_blank(),legend.position = c(0.9,0.89),
+          legend.background = element_rect(colour = "black"),
+          legend.key.height=unit(1,"cm")) +
+    guides(fill = guide_legend(ncol = 1))
+  p2
+  
+
+  p4 <- ggplot(plotdata, aes(PC1, PC2)) +
+    geom_text(aes(x = -0.5,y = 0.6,label = paste("PERMANOVA:\ndf = ",otu.adonis$aov.tab$Df[1],  "\nR2 = ",round(otu.adonis$aov.tab$R2[1],4),  "\np-value = ",otu.adonis$aov.tab$`Pr(>F)`[1],sep = "")),
+              size = 7) +
+    theme_bw() +
+    xlab("") + ylab("") +
+    theme(panel.grid=element_blank(), 
+          axis.title = element_blank(),
+          axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.text = element_blank())
+  p4
+  
+  
+  p5 <- p1 + p4 + p2 + p3 + 
+    plot_layout(heights = c(1,4),widths = c(4,1),ncol = 2,nrow = 2)
+  p5
+
+  ggsave('./New_Result/Figure/Pcoa_KO1.pdf',p5,height = 12,width = 15)
+
+```
+
+
+### NMDS图
+```{r}
+######NMDS
+NMDS_PLOT <- function(data,lab){
+ otu <- data.frame(t(gene_precent))
+  #distance <- vegdist(otu, method = 'bray')
+  #distance <- as.matrix(distance)
+  #nmds2 <- metaMDS(as.dist(distance), k = 4) # 基于距离矩阵
+  #write.table(distance, 'bray-curtis_distance.txt', col.names = NA, sep = '\t', quote = FALSE)
+  #排序，预设 2 个排序轴
+  nmds1 <- metaMDS(otu, distance = 'bray', k = 3) # 基于丰富表
+  
+  #提取应力函数值（stress）
+  nmds1.stress <- nmds1$stress
+  #提取样本排序坐标
+  nmds1.point <- data.frame(nmds1$point)
+  #提取物种（OTU）排序坐标
+  nmds1.species <- data.frame(nmds1$species)
+  
+  #可选择将结果输出并保存在本地，例如将样本坐标输出为 csv 格式
+  #write.csv(nmds1.point, 'nmds.sample.csv')
+  
+
+  ##ggplot2 作图（使用基于 OTU 丰度表的 NMDS 排序结果，预设 2 个排序轴）
+  
+  #读入样本分组文件
+  
+  #用于填充样本点的颜色
+  cbbPalette <- c('#209058','#F09008')
+  #样本点的边框颜色
+  Palette <- c("#000000", "#000000")
+  pich=c(21:24)
+  #提取样本点坐标（前两轴）
+  sample_site <- nmds1.point[1:2]
+  sample_site$names <- rownames(sample_site)
+  names(sample_site)[1:2] <- c('NMDS1', 'NMDS2')
+  names(group)[1] <- 'names'
+  
+  #为样本点坐标添加分组信息
+  sample_site <- merge(sample_site, group, by = 'names', all.x = TRUE)
+  
+  
+  ##添加adnois
+  Groups <- as.list(group)
+  otu.adonis=adonis(otu~group,data = Groups,distance = "bray")
+  
+  #使用 ggplot2 绘制 NMDS 排序图
+  nmds_plot <- ggplot(sample_site, aes(NMDS1, NMDS2, group = group,color=group,shape = group)) +
+    geom_text(aes(x = 0.14,y = 0.08,label = paste("PERMANOVA:\n    Group_D VS Group_H\n    p-value = ",otu.adonis$aov.tab$`Pr(>F)`[1],sep = "")),size = 4,hjust = 1)+
+    #geom_text_repel(aes(label = names),color = 'red',size = 5)+
+    #geom_label_repel( aes(NMDS1, NMDS2,fill = group,label=names),color="black", size= 2, angle= 60, fontface="bold" )+
+    geom_point(aes(color = group,fill = group), size = 5, alpha = 0.8) + #可在这里修改点的透明度、大小
+    scale_shape_manual(values=pich)+ #可在这里修改点的形状
+    scale_colour_manual(values=Palette)+ #可在这里修改点的颜色
+    scale_fill_manual(values=cbbPalette)+
+    #stat_ellipse(aes(fill = group),geom = "polygon",level = 0.95,alpha = 0.3, show.legend = F) +
+    geom_vline(aes(xintercept = 0),linetype="dotted")+
+    geom_hline(aes(yintercept = 0),linetype="dotted")+
+    theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent')) + #去掉背景框
+    theme(legend.key = element_rect(fill = 'transparent'), legend.title = element_blank(),
+          legend.background = element_blank()) + #去掉图例标题及标签背景
+    labs(x = 'NMDS axis1', y = 'NMDS axis2', title = paste('Stress =', round(nmds1$stress, 4))) +
+    theme(plot.title = element_text(hjust = 0.5)) #标题居中
+    #annotate('text', label = 'Healthy', x = -0.35, y = 0.4, size = 5, colour =  "#56B4E9") +
+    #annotate('text', label = 'Diarrhea', x = 0.6, y = 0.25, size = 5, colour = "#E69F00") 
+  nmds_plot
+  #geom_text(aes(label = group), data = species_site, color = 'green4', size = 2) #添加物种排序（top10 OTU，展示为标签）
+   ggsave('./New_Result/Figure/NMDS2_KO.tiff',nmds_plot,height = 7,width = 10)  
+  ggsave(paste0('./Reuslt/Beta多样性排序图/',lab,'.tiff'),nmds_plot,height = 7,width = 10)   
+  
+}
+NMDS_PLOT(gene_filter,"Species")  
+  
+```
+
+
+### PCA图
+
+```{r}
+######### PCA  
+  # hellinger转换一下
+  species_hel <- decostand(gene_precent, method = 'hellinger')
+  new <- data.frame(t(species_hel))
+  
+  pca <- PCA(new,scale.unit = FALSE ,graph = FALSE)
+  
+  # 碎石图
+  #fviz_screeplot(pca, addlabels = TRUE, ylim = c(0, 50))
+  # 使用FactoMineR包中函数做PCA图
+  # fviz_pca_ind(pca,
+  #              #label = "none", # 隐藏个体的标签
+  #              habillage = group$group, # 按组划分颜色
+  #              palette = c("#E69F00", "#56B4E9"),
+  #              addEllipses = TRUE, # 置信椭圆
+  #              legend.title = "Group", #分组名
+  #              repel = TRUE
+  # )
+  # library(ggplotify)
+  # plot_PCA <- as.ggplot(A)
+  # ggsave('./PCA.tiff',plot_PCA,height = 7,width = 10)
+  
+  #用于填充样本点的颜色
+  cbbPalette <- c('#209058','#F09008')
+  #样本点的边框颜色
+  Palette <- c("#000000", "#000000")
+  pich=c(21:24)
+  
+  ##通过ggplot作图
+  ## 坐标
+  pc1 <- pca$ind$coord[,1]
+  pc2 <- pca$ind$coord[,2] 
+  
+  plotdata <- data.frame(rownames(pca$ind$coord),pc1,pc2,group$group)
+  colnames(plotdata) <- c("sample","PC1","PC2","group")
+  point <- geom_point(aes(color = group,fill = group,shape = group),
+                      size = 8)
+  # 贡献度
+  pc1 <- floor(pca$eig[1,2]*100)/100
+  pc2 <- floor(pca$eig[2,2]*100)/100
+  
+  #图像绘制
+  PCA_plot <- ggplot(plotdata,aes(PC1,PC2)) +
+    #添加样本名称
+    #geom_label_repel(aes(PC1,PC2,label = sample),fill = "white",color = "black",box.padding = unit(0.6,"lines"),segment.colour = "grey50",label.padding = unit(0.35,"lines"),family = "Arial") + 
+     geom_point(aes(color = group,fill = group), size = 5, alpha = 0.8) + 
+    scale_shape_manual(values = pich)+
+    #stat_ellipse(aes(fill = group),geom = "polygon",level = 0.95,alpha = 0.3)+
+    scale_fill_manual(values=cbbPalette)+
+    scale_color_manual(values=cbbPalette)+
+    labs(title="PCA Plot") + 
+    xlab(paste("PC1 ( ",pc1,"%"," )",sep="")) + 
+    ylab(paste("PC2 ( ",pc2,"%"," )",sep=""))+
+    theme(text=element_text(size = 12))+
+    geom_vline(aes(xintercept = 0),linetype = "dotted")+
+    geom_hline(aes(yintercept = 0),linetype = "dotted")+
+        theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent')) + #去掉背景框
+    theme(legend.key = element_rect(fill = 'transparent'), legend.title = element_blank(),
+legend.background = element_blank()) + #去掉图例标题及标签背景
+    theme(plot.title = element_text(hjust = 0.5))
+  PCA_plot
+  ggsave('./New_Result/Figure/PCA_KO.tiff',PCA_plot,height = 7,width = 10)  
+```
+
+
+
+
+
+## 功能部分
+
+基于KO,GO,Pathway1-3 Level三个通路水平，还有Module水平，绘制蝴蝶图或者差异柱状图。
+
+### KO
+```{r}
+  gene <- read.delim('./KEGG/KO4_abun.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  colnames(gene) <- gsub(":sum","",colnames(gene))
+  gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+#过滤unclassified物种再百分比标准化
+  gene <- gene[!grepl("^unclass",rownames(gene)),]
+  gene_precent <- as.data.frame(apply(gene, 2, function(x){x/sum(x)}))
+  #gene_precent2 <- decostand(gene,"total",2)
+ 
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                 (x>=0.001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                   (x>=0.001))/length(x)}) > cutoff),])
+  gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+  rm(gene1,gene2)
+Nr_wiclox_test(gene_filter,'KO0.001')
+  
+diff_data <- read.csv('./New_Result/Table/diff_KO.csv',header = T,row.names = 1)
+
+diff_box <- diff_data[,c(1:18)] 
+barPLOT(diff_box,lab = 'KO') 
+
+## 基于KO丰度的PCOA
+
+
+
+```
+
+
+
+### KEGG Pathway
+
+```{r}
+### 先进行Pathway3的差异检验,然后基于过滤的结果合并前俩层级，计算丰度
+
+### 差异分析
+gene <- read.delim('./KEGG/First3_Pathway.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  Pathway3_gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(Pathway3_gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = '')) 
+  #注释信息
+  pathway_ano <- gene[c(21:25)]
+  Pathway2_ano <-  dplyr::distinct(pathway_ano,Pathway2,Pathway2_level,.keep_all = TRUE) %>% 
+    dplyr::select(c(1:4))%>% select(.,Pathway2_level,everything())
+  Pathway1_ano <-  dplyr::distinct(pathway_ano,Pathway1,Pathway1_level,.keep_all = TRUE) %>% 
+    dplyr::select(c(1:4))%>% select(.,Pathway2_level,everything())
+
+##百分比化
+  gene_precent <- as.data.frame(apply(Pathway3_gene, 2, function(x){x/sum(x)}))
+  #gene_precent2 <- decostand(gene,"total",2)
+  
+  #过滤低丰度物种
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                 (x>=0.001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                   (x>=0.001))/length(x)}) > cutoff),])
+gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+
+## 差异分析并合并更高层级
+Pathway_wilcox_test <- function(data,lab){
+
+  names(group)[1] <- 'sample'
+  result <- NULL
+  library(doBy)
+  se <- function(x) sd(x) / (length(x))^0.5
+  
+  for (n in 1:nrow(data)) {
+    gene_n <- data.frame(t(data[n,subset(group, group %in% c("D", "H"))$sample]))
+    gene_id <- names(gene_n)[1]
+    names(gene_n)[1] <- 'gene'
+    gene_n$sample <- rownames(gene_n)
+    gene_n <- merge(gene_n, group, by = 'sample', all.x = TRUE)
+    gene_n$group <- factor(gene_n$group)
+    p_value <- wilcox.test(gene~group, gene_n,exact = FALSE)$p.value
+    if (!is.na(p_value)){
+      stat <- summaryBy(gene~group, gene_n, FUN = c(mean, sd, se))
+      result <- rbind(result, c(gene_id, as.character(stat[1,1]), stat[1,2], stat[1,3],stat[1,4], as.character(stat[2,1]), stat[2,2], stat[2,3],stat[2,4], p_value))
+    }
+  }
+  
+  result <- data.frame(result)
+  names(result) <- c('Pathway3', 'groupD', 'mean1', 'sd1', 'se1','groupH', 'mean2', 'sd2','se2','p_value')
+  
+  a <- data.frame(apply(result[,c(3:5,7:10)],2 ,as.numeric))
+  result <- data.frame(result[1:2],a[1:3],result[6],a[4:7]) 
+  result <- result[order(result$p_value),]  # 从小到大排序
+  # P.adjust  p 值校正的过程 
+  #先将p值那列提出转换为矩阵形式 
+  
+  result$p_adjust <- p.adjust(result$p_value,method = 'BH') # 这里使用BH 方法 和fdr结果相似
+  #result$padj <- p.adjust(result$p_value, method = "none")
+  
+  result$enrich_group <- ifelse(result$mean1 > result$mean2,"D","H")
+  
+  result$sign <- ifelse(result$p_value>=0.01 & result$p_value<0.05,'*',
+                        ifelse(result$p_value>=0.001 & result$p_value<0.01,'**', 
+                               ifelse(result$p_value<0.001,'***','ns')))
+  
+  rownames(result) <- NULL
+  result <- result %>% tibble::column_to_rownames('Pathway3')
+  result_ano <- cbind(gene_precent[rownames(result),],result,pathway_ano[rownames(result),])%>%
+                  arrange(.,p_value)
+
+  diff_pathway_ano <- subset(result_ano,p_adjust < 0.05)
+  
+
+  write.csv(diff_pathway_ano, paste0('./New_Result/Table/diff_',lab,'.csv'), quote = TRUE,row.names = TRUE)
+  write.csv(result_ano, paste0('./New_Result/Table/Result_',lab,'.csv'),  quote = TRUE,row.names = TRUE)
+}
+Pathway_wilcox_test(gene_filter,lab = 'Pathway3')
+
+
+## 计算前俩层级的差异柱状图
+group <- read.table('sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+Pathway3 <-  read.csv('./New_Result/Table/Result_Pathway3.csv',header = T,row.names = 1)
+
+# 基于过滤后的KEGG Pathway3去计算前俩层级KEGG的丰度并进行差异检验绘图
+## 第二层级
+Pathway2_abun <- Pathway3 %>% dplyr::select(.,D1:H8,Pathway2,Pathway2_level) %>%
+  group_by(Pathway2,Pathway2_level) %>% 
+  summarise_all(sum)%>% tibble::column_to_rownames('Pathway2_level')%>%select(-Pathway2)
+Nr_wiclox_test(Pathway2_abun,'Pathway2')
+
+  
+##第一层级
+Pathway1_abun <- Pathway3 %>% dplyr::select(.,D1:H8,Pathway1,Pathway1_level) %>%
+  group_by(Pathway1,Pathway1_level) %>% 
+  summarise_all(sum)  %>% tibble::column_to_rownames('Pathway1_level')%>%select(-Pathway1)
+Nr_wiclox_test(Pathway1_abun,'Pathway1')
+
+
+### 对第二层级(包含一层)绘制差异柱形图
+### 前俩层级的注释信息
+pathway_ano <- gene[c(21:25)]
+Pathway2_ano <-  dplyr::distinct(pathway_ano,Pathway2,Pathway2_level,.keep_all = TRUE) %>% 
+  dplyr::select(c(1:4))%>% select(.,Pathway2_level,everything())
+ 
+# 第一层级注释信息 
+#Pathway1_ano <-  dplyr::distinct(pathway_ano,Pathway1,Pathway1_level,.keep_all = TRUE) %>% dplyr::select(c(1:4))%>% select(.,Pathway2_level,everything())
+
+  Pathway2_abun$Tax <- rownames(Pathway2_abun)
+  gene_filter2 <- melt(Pathway2_abun, id = 'Tax')
+  names(group)[1] <- 'variable'
+  gene_filter2 <- merge(gene_filter2, group, by = 'variable')
+  se <- function(x) sd(x) / (length(x))^0.5
+  pathway_stat <- summaryBy(value~group+Tax, gene_filter2, FUN = c(mean, sd, se))
+  pathway_stat$value.mean <-   pathway_stat$value.mean *100
+  pathway_stat$value.sd <-  pathway_stat$value.sd *100 
+  pathway_stat$value.se <-  pathway_stat$value.se *100
+  
+  Tax_level <- unique(gene_filter2$Tax)
+  
+  
+  for (i in Tax_level) {
+    Tax_i <- subset(gene_filter2, Tax == i)
+    test <- wilcox.test(value~group, Tax_i,exact = FALSE)
+    line_t <- which(pathway_stat$Tax == i & pathway_stat$group == 'H')
+    pathway_stat[line_t,'p_value'] <- test$p.value
+    if (test$p.value < 0.05 & test$p.value >= 0.01) {
+      pathway_stat[line_t,'sign'] <- '*'
+    }
+    if (test$p.value < 0.01 & test$p.value >= 0.001) {
+      pathway_stat[line_t,'sign'] <- '**'
+    }
+    if (test$p.value < 0.001) {
+      pathway_stat[line_t,'sign'] <- '***'
+      
+    }
+    if (test$p.value > 0.05) {
+      pathway_stat[line_t,'sign'] <- " "  
+    }
+  }  
+  
+  # 添加一级注释
+  rownames(Pathway2_ano) <- NULL
+  names(Pathway2_ano)[1] <- 'Tax' 
+  pathway_stat <- merge(pathway_stat,Pathway2_ano,by = 'Tax')
+  
+  swr = function(string, nwrap = 12){
+    paste(strwrap(string,width = nwrap),collapse = "\n")
+  }
+  swr = Vectorize(swr)
+  pathway_stat$Pathway1 <- swr(pathway_stat$Pathway1)
+  
+  pathway_stat[pathway_stat == 'nr'] <- NA
+  p2 <- ggplot(pathway_stat,aes(Pathway2,value.mean,fill = group))+
+    geom_col(position = 'dodge', width = 0.8, colour = 'black', size = 0.05) + 
+    #添加显著性标记“*”
+    geom_errorbar(aes(ymin = value.mean - value.se, ymax = value.mean + value.se), size = 0.2, width = .35, position = position_dodge(width = .8))+  #添加误差线（均值±标准差）   
+    geom_text(aes(label = sign, y = value.mean + value.se + 3), position = position_dodge(0.8),vjust = 1 ) +
+  
+    scale_fill_manual(values =  c('#209058','#F09008'))+   #填充颜色
+    #mytheme+ #去除图例标题，调整图例位置
+    coord_flip()+   #横、纵坐标轴反转
+    scale_y_continuous(expand = c(0,0),limits = c(0,max(pathway_stat$value.mean+0.5)))+
+    labs(x = 'KEGG Pathway', y = 'Relative Abundance (%)')+  #坐标轴标题
+    theme(
+      panel.background = element_rect(fill = "white",colour='black'),
+      panel.grid.major = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      panel.grid.minor = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      axis.ticks.length = unit(0.4,"lines"),
+      axis.ticks = element_line(color='black'),
+      axis.line = element_line(colour = "black"),
+      axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+      axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      axis.text.y = element_text(color = "black",size = 10),
+      legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      strip.text.y = element_text(angle = 0,size = 7,face = "bold"),
+      legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+    )+
+    facet_grid(Pathway1~.,space = "free_y",scales = "free_y")
+  p2
+  #write.csv(pathway_stat, paste0('./table/diff_',lab,'.csv'), quote = TRUE,row.names = FALSE)
+  ggsave('./New_Result/Figure/Pathway_level1.pdf',p2,height = 7,width = 9)
+  ggsave('./Result/差异功能/Pathway_level2.tiff',p2,height = 7,width = 8)
+
+### 筛选通路后进行蝴蝶图绘制
+## 关于代谢通路的差异 
+diff_Pathway3 <- read.csv('./New_Result/Table/diff_Pathway3.csv',header = T,stringsAsFactors = F,row.names = 1)
+
+diff_Pathway3$Name <-paste(rownames(diff_Pathway3),":",diff_Pathway3$Pathway3)
+
+##筛选模块
+diff_Pathway3 <- arrange(diff_Pathway3,enrich_group,Pathway1)
+
+sub_pathway3 <- subset(diff_Pathway3,Pathway1%in%c('Cellular Processes',"Environmental Information Processing","Genetic Information Processing","Metabolism")) %>% arrange(Pathway1,Pathway2)
+
+
+data1 <- mutate(sub_pathway3,foldchange = mean1/mean2)%>%
+      select(.,Name,foldchange,Pathway1,Pathway2)
+
+data1$foldchange <- ifelse(data1$foldchange <1,data1$foldchange*-1,data1$foldchange*1) 
+
+# 大于1的数 减去 1
+data1$foldchange <- ifelse(data1$foldchange > 1,data1$foldchange-1,data1$foldchange*1) 
+
+data1 <- transform(data1,judge = ifelse(foldchange>0,'TRUE','FALSE'))
+data1 <- arrange(data1,foldchange)
+
+Diff_Module <- ggplot(data1, mapping = aes(x = factor(Name,levels = rev(Name)), y = foldchange, fill = judge)) + 
+  geom_bar(stat = 'identity', position = 'identity') + 
+  scale_fill_manual(values = c('#209058','#F09008'), guide = FALSE) +
+  labs(x = 'Module',y = 'D/H fold change')+ 
+  coord_flip()+
+  scale_y_continuous(limits = c(-1,1),breaks = seq(-1,1,0.5),labels = as.character(seq(0,2,0.5)))+
+  theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), axis.line = element_line(colour = 'black'), legend.position = c(0.9, 0.85)) +
+  theme(
+    axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+    axis.text.y = element_text(size = 7,hjust = 1,color = 'black'),
+    axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+    legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+    legend.background = element_blank(),
+    strip.text.y = element_text(angle = 0,size = 7,face = "bold"),
+    legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+  )+
+  facet_grid(Pathway1~.,space = "free_y",scales = "free_y")
+  
+Diff_Module
+ ggsave('./New_Result/Figure/fold_sub_Pathway3.tiff',Diff_Module,height = 7,width = 10)  
+
+```
+
+### Module
+```{r}
+
+  gene <- read.delim('./KEGG/First3_Module.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  gene <- gene[!grepl("^unclass",rownames(gene)),]
+  sub_gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(sub_gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = '')) 
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+
+  
+  # 百分比转换
+  gene_precent <- as.data.frame(apply(sub_gene, 2, function(x){x/sum(x)}))#百分比化
+  #gene_precent2 <- decostand(gene,"total",2)
+  module_ano <- gene[c(21:24)]
+  
+  #过滤低丰度物种 
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                       (x>=0.001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                      (x>=0.001))/length(x)}) > cutoff),])
+  gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+  rm(gene1,gene2)
+  
+  
+  gene_filter$sum <- rowSums(gene_filter)
+  #求各类群的丰度总和，并排序
+  gene_filter <- gene_filter[order(gene_filter$sum,decreasing = TRUE),]
+  #删除最后一列和,并取Top10物种作图
+  gene_filter <- gene_filter[,-ncol(gene_filter)]
+  
+##差异分析
+  Module_wiclox_test <- function(data,lab){
+
+  names(group)[1] <- 'sample'
+  result <- NULL
+  library(doBy)
+  se <- function(x) sd(x) / (length(x))^0.5
+  
+  for (n in 1:nrow(data)) {
+    gene_n <- data.frame(t(data[n,subset(group, group %in% c("D", "H"))$sample]))
+    gene_id <- names(gene_n)[1]
+    names(gene_n)[1] <- 'gene'
+    gene_n$sample <- rownames(gene_n)
+    gene_n <- merge(gene_n, group, by = 'sample', all.x = TRUE)
+    gene_n$group <- factor(gene_n$group)
+    p_value <- wilcox.test(gene~group, gene_n,exact = FALSE)$p.value
+    if (!is.na(p_value)){
+      stat <- summaryBy(gene~group, gene_n, FUN = c(mean, sd, se))
+      result <- rbind(result, c(gene_id, as.character(stat[1,1]), stat[1,2], stat[1,3],stat[1,4], as.character(stat[2,1]), stat[2,2], stat[2,3],stat[2,4], p_value))
+    }
+  }
+  
+  result <- data.frame(result)
+  names(result) <- c('Module', 'groupD', 'mean1', 'sd1', 'se1','groupH', 'mean2', 'sd2','se2','p_value')
+  
+  a <- data.frame(apply(result[,c(3:5,7:10)],2 ,as.numeric))
+  result <- data.frame(result[1:2],a[1:3],result[6],a[4:7]) 
+  result <- result[order(result$p_value),]  # 从小到大排序
+  # P.adjust  p 值校正的过程 
+  #先将p值那列提出转换为矩阵形式 
+  
+  result$p_adjust <- p.adjust(result$p_value,method = 'BH') # 这里使用BH 方法 和fdr结果相似
+  #result$padj <- p.adjust(result$p_value, method = "none")
+  
+  result$enrich_group <- ifelse(result$mean1 > result$mean2,"D","H")
+  
+  rownames(result) <- NULL
+  result <- result %>% tibble::column_to_rownames('Module')
+  result_ano <- cbind(gene_precent[rownames(result),],result,module_ano[rownames(result),])%>%
+    arrange(.,p_value)
+  
+  diff_module <- subset(result_ano,result_ano$p_adjust < 0.05)
+  
+  write.csv(diff_module, paste0('./New_Result/Table/diff_',lab,'.csv'), quote = TRUE,row.names = TRUE)
+  write.csv(result_ano, paste0('./New_Result/Table/Result_',lab,'.csv'),  quote = TRUE,row.names = TRUE)
+}  
+Module_wiclox_test(gene_filter,'Module')
+
+
+
+## 计算差异Module的蝴蝶图
+diff_Module <- read.csv('./New_Result/Table/diff_Module.csv',header = T,stringsAsFactors = F,row.names = 1)
+
+diff_Module$Name <- paste("(",rownames(diff_Module),")",diff_Module$module_des)
+### 蝴蝶图
+##筛选模块
+diff_Module <- subset(diff_Module,Pathway1 %in% c('Pathway modules'))%>% arrange(Pathway2)
+diff_Module <- arrange(diff_Module,diff_Module$enrich_group,diff_Module$Pathway2,diff_Module$Pathway3)
+
+write.table(diff_Module,'./New_Result/Table/sub1_Module.txt',quote = FALSE,sep = '\t')
+
+data1 <- mutate(diff_Module,foldchange = mean1/mean2)%>%
+      select(.,Name,foldchange,Pathway2)
+
+data1$foldchange <- ifelse(data1$foldchange <1,data1$foldchange*-1,data1$foldchange*1) 
+
+# 大于1的数 减去 1
+data1$foldchange <- ifelse(data1$foldchange > 1,data1$foldchange-1,data1$foldchange*1) 
+
+data1 <- transform(data1,judge = ifelse(foldchange>0,'TRUE','FALSE'))
+data1 <- arrange(data1,data1$Pathway2)
+
+Diff_Module <- ggplot(data1, mapping = aes(x = factor(Name,levels = rev(Name)), y = foldchange, fill = judge)) + 
+  geom_bar(stat = 'identity', position = 'identity') + 
+  scale_fill_manual(values = c('#209058','#F09008'), guide = FALSE) +
+  labs(x = 'Module',y = 'D/H fold change')+ 
+  coord_flip()+
+  scale_y_continuous(limits = c(-1,1),breaks = seq(-1,1,0.5),labels = as.character(seq(0,2,0.5)))+
+  theme(panel.grid = element_blank(), panel.background = element_rect(color = 'black', fill = 'transparent'), axis.line = element_line(colour = 'black'), legend.position = c(0.9, 0.85)) +
+  theme(
+    axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+    axis.text.y = element_text(size = 7,hjust = 1,color = 'black'),
+    axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+    legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+    legend.background = element_blank(),
+    strip.text.y = element_text(angle = 0,size = 7,face = "bold"),
+    legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+  )
+
+Diff_Module
+ ggsave('./New_Result/Figure/fold_sub_Moudle1.tiff',Diff_Module,height = 7,width = 10)  
+
+ 
+### bar plot
+# 准备数据
+data2_D <- select(diff_Module,Name,groupD:se1,Pathway2)
+data2_H <- select(diff_Module,Name,groupH:se2,Pathway2)
+names(data2_H)[1:5] <- c('Name',"groupD","mean1","sd1","se1")
+data_D <- rbind(data2_D,data2_H)
+ data_D$mean1 <-   data_D$mean1 *100
+   data_D$sd1 <-   data_D$sd1 *100 
+   data_D$se1<-   data_D$se1 *100
+# 作图
+  p2 <- ggplot(data_D,aes(factor(Name,levels = rev(unique(data_D$Name))),mean1,fill = groupD))+
+    geom_col(position = 'dodge', width = 0.8, colour = 'black', size = 0.05) + 
+    #添加显著性标记“*”
+    geom_errorbar(aes(ymin = mean1 - se1, ymax = mean1 + se1), size = 0.2, width = .35, position = position_dodge(width = .8))+  #添加误差线（均值±标准差）   
+  
+    scale_fill_manual (values =  c('grey','white'))+   #填充颜色
+    #mytheme+ #去除图例标题，调整图例位置
+    coord_flip()+   #横、纵坐标轴反转
+    scale_y_continuous(expand = c(0,0),limits = c(0,max(data_D$mean1+0.5)))+
+    labs(x = 'Module', y = 'Relative Abundance (%)')+  #坐标轴标题
+    theme(
+      panel.background = element_rect(fill = "white",colour='black'),
+      panel.grid.major = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      panel.grid.minor = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      axis.ticks.length = unit(0.4,"lines"),
+      axis.ticks = element_line(color='black'),
+      axis.line = element_line(colour = "black"),
+      axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+      axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      axis.text.y = element_text(color = "black",size = 10),
+      legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      strip.text.y = element_text(angle = 0,size = 7,face = "bold"),
+      legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+    )
+    #facet_grid(Pathway2~.,space = "free_y",scales = "free_y")
+
+p2
+ggsave('./New_Result/Figure/diff_sub_Moudle11.pdf',p2,height = 7,width = 10)  
+## heatmap
+#Module_heatmap <- select(diff_Module,module_des,mean1,mean2) %>% tibble::column_to_rownames('module_des')
+#names(Module_heatmap) <- c('Group_D','GroupH')
+#coul = colorRampPalette(c("navy", "white", "firebrick3"))(50)
+#pheatmap(Module_heatmap,scale = 'row',color = coul,cluster_rows = FALSE,cluster_cols = FALSE,filename = 'Module_heat.pdf')
+
+# 柱状图
+
+ 
+```
+
+
+
+### COG
+```{r}
+ gene <- read.delim('./COG/COG_abun.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  gene <- gene[!grepl("^unclass",rownames(gene)),]
+  sub_gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(sub_gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  
+  # 百分比转换
+  gene_precent <- as.data.frame(apply(sub_gene, 2, function(x){x/sum(x)}))#百分比化
+
+  #过滤低丰度物种 
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                 (x>=0.001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                   (x>=0.001))/length(x)}) > cutoff),])
+  gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+  rm(gene1,gene2)
+
+## 差异分析
+Nr_wiclox_test(gene_filter,"COG0.001")
+
+
+```
+
+
+### OG
+```{r}
+gene <- read.delim('./COG/COg_abun.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  gene <- gene[!grepl("^unclass",rownames(gene)),]
+  sub_gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(sub_gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+
+  # 百分比转换
+  gene_precent <- as.data.frame(apply(sub_gene, 2, function(x){x/sum(x)}))#百分比化
+
+  #过滤低丰度物种 
+  cutoff = 0.5
+  gene1 <- data.frame(gene_precent[,1:10][which(apply(gene_precent[,1:10], 1, function(x){length(which
+                                                                                                 (x>=0.0001))/length(x)}) > cutoff),])
+  gene2 <- data.frame(gene_precent[,11:18][which(apply(gene_precent[,11:18], 1, function(x){length(which
+                                                                                                   (x>=0.0001))/length(x)}) > cutoff),])
+  gene_filter <- gene_precent[union(rownames(gene1),rownames(gene2)),]
+  rm(gene1,gene2)
+
+## 差异分析
+Nr_wiclox_test(gene_filter,"New_OG")
+
+
+## 制作柱状图
+diff_COG <- read.delim('./COG/diff_cog.txt',header = T,stringsAsFactors = F)
+diff_COG[diff_COG == 'ns'] <- ''
+cog_fun <- read.delim('./COG/Cogfun.tsv',header = T,stringsAsFactors = F)
+names(cog_fun)[1] <- 'Taxonomy'
+diff_COG <- merge(diff_COG,cog_fun,by = 'Taxonomy',all.x = TRUE)
+diff_COG <- diff_COG[order(diff_COG$Level1),]
+diff_COG$Name <- paste(diff_COG$Taxonomy,diff_COG$Level2,sep = ':')
+diff_COG$mean <- diff_COG$mean * 100
+diff_COG$se <- diff_COG$se * 100
+diff_COG$sd <- diff_COG$sd *100
+
+swr = function(string, nwrap = 12){
+  paste(strwrap(string,width = nwrap),collapse = "\n")
+}
+swr = Vectorize(swr)
+diff_COG$Level1 <- swr(diff_COG$Level1)
+
+p <- ggplot(diff_COG, aes(factor(Name,levels = rev(unique(Name))), mean, fill = group)) +
+  geom_col(position = position_dodge(width = 0.9), width = 0.7) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.25, size = 0.3, position = position_dodge(0.9)) +
+  scale_fill_manual(values = c('#209058','#F09008')) +
+  labs(title = NULL, x = NULL, y = 'Relative abundance (%)', fill = NULL) +
+    theme(
+      panel.background = element_rect(fill = "white",colour='black'),
+      panel.grid.major = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      panel.grid.minor = element_line(color = "grey",linetype = "dotted",size = 0.3),
+      axis.ticks.length = unit(0.4,"lines"),
+      axis.ticks = element_line(color='black'),
+      axis.line = element_line(colour = "black"),
+      axis.text.x = element_text(size = 12,hjust = 1,face = 'bold',color = 'black'),
+      axis.title = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      axis.text.y = element_text(color = "black",size = 10),
+      legend.title  = element_text(size = 12,hjust = 0.5,face = 'bold',color = 'black'),
+      strip.text.y = element_text(angle = 0,size = 7,face = "bold"),
+      legend.text  = element_text(size = 12,hjust = 0.5,color = 'black')
+    )+
+  scale_y_continuous(expand = c(0, 0))+
+  coord_flip()+ 
+  geom_text(aes(label = sign, y = mean + se + 3), position = position_dodge(0.9),hjust = -0.5)+
+  facet_grid(Level1~.,space = "free_y",scales = "free_y")
+
+p
+ggsave('./New_Result/Figure/diff21_cog.pdf',p,width = 10,height = 7)
+
+```
+
+
+### CAZy
+```{r}
+
+## 导入丰度
+gene <- read.delim('./Cazy/Final_cazy_abun.tsv',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+  colnames(gene) <- gsub(".quant","",colnames(gene))
+  gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+  group <- read.table('./sample.txt', sep = '\t', header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  
+  gene_precent <- as.data.frame(apply(gene, 2, function(x){x/sum(x)}))
+  
+  
+## 差异物种作图展示  
+gene <- read.delim('./Cazy/bar_diff.txt', sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+gene$mean <- gene$mean*100
+gene$sd <- gene$sd *100
+
+p2 <- ggplot(gene,aes(factor(Family),mean,fill = Group))+
+    geom_col(position = 'dodge', width = 0.8, colour = 'black', size = 0.05) + 
+      geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), size = 0.2, width = .35, position = position_dodge(width = .8))+  #添加误差线（均值±标准差）   
+    scale_fill_manual (values =  c('#209058','#F09008'))+   #填充颜色
+    #mytheme+ #去除图例标题，调整图例位置
+    scale_y_continuous(expand = c(0,0),limits = c(0,max(gene$mean+0.5)))+
+    labs(x = '', y = 'Relative Abundance (%)')+
+  mytheme+theme(
+  legend.title = element_text(face = 'bold',size = 11),
+  axis.text.x = element_text(angle = 45,size = 8,hjust = 1,color = rep(c('#8DD3C7', '#B3DE69', '#BEBADA',
+    '#FB8072', '#80B1D3', '#FDB462'),c(2,11,1,13,11,1)),face = 'bold'),
+  axis.text.y = element_text(size = 12,hjust = 1,color = 'black'),
+  axis.title = element_text(size =9))
+
+p2
+ ggsave('./New_Result/Figure/差异物种/diffbar_Cazy2.pdf',p2,height = 4,width = 12) 
+
+
+```
+
+
+
+
+
+
+### 物种-功能相关性图
+
+```{r}
+
+#### 物种---代谢通路相关
+
+## 物种丰度表
+Species <- read.csv('./New_Result/Table/diff_Species.csv',header = T,stringsAsFactors = F,row.names = 1)%>%
+  dplyr::select(.,c(1:18))
+
+
+## 代谢通路功能丰度表
+diff_Pathway3 <- diff_Pathway3 <- read.csv('./New_Result/Table/diff_Pathway3.csv',header = T,stringsAsFactors = F,row.names = 1)
+##筛选Pathway 
+fun_pathway <- subset(diff_Pathway3,Pathway1%in%c('Cellular Processes',"Environmental Information Processing","Genetic Information Processing","Metabolism")) %>% arrange(Pathway1,Pathway2)
+a <- c('ko04122','ko00330','ko00640')
+fun_pathway <- fun_pathway[!rownames(fun_pathway)%in%a,]
+
+fun_pathway$name <-  paste(rownames(fun_pathway),":",fun_pathway$Pathway3)
+rownames(fun_pathway) <- NULL
+fun_pathway <- fun_pathway %>% tibble::column_to_rownames('name')%>% select(c(1:18))
+
+
+## 筛选的物种 筛选某些物种与某个功能之间计算相关性
+sub_genu <- read.delim('./New_Result/Table/LPS_corGenu.txt',header = T,stringsAsFactors = F)
+sub_genu <- sub_genu[!duplicated(sub_genu$Genu),]
+gene_precent <- gene_precent[sub_genu$Genu,]
+lps_pathway <- fun_pathway[grepl('^ko00540',rownames(fun_pathway)),]
+
+
+
+### 模块丰度
+diff_Module <- read.csv('./New_Result/Table/diff_Module.csv',header = T,stringsAsFactors = F,row.names = 1)
+## 筛选 Module
+fun_Module <- subset(diff_Module,Pathway1%in%c('Pathway modules'))%>% arrange(Pathway2)
+
+## 进一步筛选
+id <- c('Metabolism of cofactors and vitamins','Xenobiotics biodegradation')
+fun_Module <- subset(fun_Module,!Pathway2%in%id) 
+
+fun_Module$name <-  paste(rownames(fun_Module),":",fun_Module$module_des)
+rownames(fun_Module) <- NULL
+fun_Module <- fun_Module %>% tibble::column_to_rownames('name')%>% select(c(1:18))
+
+
+
+## 读取属水平物种
+gene <- read.delim('./nr/Genu.txt',row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE) 
+gene <- gene[!grepl("^unclass",rownames(gene)),]
+colnames(gene) <- gsub(":sum","",colnames(gene))
+  gene <- dplyr::select(gene,D1,D2,D3,D4,D5,D6,C1,C2,C3,C4,H1,H2,H3,H4,H5,H6,B1,B4)
+  colnames(gene) <- c(paste('D',1:10,sep = ''),paste('H',1:8,sep = ''))
+## 尽量使用原始丰度
+gene_precent <- as.data.frame(apply(gene, 2, function(x){x/sum(x)}))#百分比化
+data <- read.delim('M00060_genu.txt',header = F)
+data1 <- gene[rownames(gene)%in%data$V1,]
+data <- data[r_value1$Source,]
+data <- data[match(r_value1$Source,data$V1),]
+data <- cbind(data,r_value1)
+write.csv(data,'M00060_raw_Genu_cor.csv',quote = F,row.names = FALSE)
+
+## 读取差异Module的丰度
+data2 <- read.csv('./New_Result/Table/diff_Module.csv',header = T,stringsAsFactors = F,row.names = 1)
+data2 <- data2[,c(1:18)]
+
+
+
+Species_Cor_fun <- function(data1,data2,
+                            R = 0.5,P = 0.05,lab){
+
+res <- corr.test(t(data1),t(data2),method = "spearman",adjust = "BH",alpha = 0.05)
+
+
+# 提取相关性矩阵的r、p值
+r_matrix=res$r
+p_matrix=res$p
+ 
+### 输出相关性表格
+# 转换数据为长格式形式，方便下游分析
+p_value=melt(p_matrix)
+r_value=melt(r_matrix)
+
+#将r、p两表合并
+r_value=cbind(r_value, p_value$value)
+
+# 删除含r_value=NA的行
+r_value=na.omit(r_value)
+# 删除abs(r_value) > 0.7
+r_value = subset(r_value,abs(r_value$value) > 0.5 & r_value$value != 1)
+
+# add *
+names(r_value) <- c('Source','Target','correlation','pvalue')
+r_value <- transform(r_value,sign = ifelse(pvalue>=0.01 &pvalue<0.05,'*',
+                                                 ifelse(pvalue>=0.001 & pvalue<0.01,'**', 
+                                                        ifelse(pvalue<0.001,'***',''))))
+
+r_value1 <- subset(r_value,Target == 'M00060')
+
+r_value <- arrange(r_value,Source,correlation)
+
+
+write.csv(r_value,paste('./New_Result/Figure/相关性图/Species_',lab,'.csv'),quote = F,row.names = FALSE)
+
+#coul <- colorRampPalette(brewer.pal(8, "PiYG"))(25)
+
+
+r_matrix[p_matrix> 0.05|abs(r_matrix)< R]=0
+
+
+# 设置色条间隔多少
+### 可以设置图例范围将相关性介于多少之间的数值变为0
+bk <- c(seq(-1,-0.1,by=0.01),seq(0,1,by=0.01))
+
+plot <- pheatmap(r_matrix,fontsize_row = 6,fontsize_col = 6,cluster_rows = FALSE,border_color = 'grey',
+         color = c(colorRampPalette(colors = c("navy","white"))(length(bk)/2),colorRampPalette(colors = c("white","firebrick3"))(length(bk)/2)),border = F,
+         number_color="black",cluster_col = TRUE)
+
+ggsave(paste('./New_Result/Figure/相关性图/Species_',lab,'.pdf'),plot,width = 10,height = 8)
+
+}
+
+
+## 计算物种与代谢通路的相关性
+Species_Cor_fun(data1 = fun_pathway,data2 = Species,lab = 'Pathway11')
+
+## 计算物种与模块的相关性
+Species_Cor_fun(data1 = fun_Module,data2 = Species,lab = 'fiter_Module')
+
+```
+
+
